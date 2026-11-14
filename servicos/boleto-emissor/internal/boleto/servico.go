@@ -7,17 +7,18 @@ import (
 	"github.com/google/uuid"
 )
 
-// Servico grava o boleto PENDENTE e avisa o publicador.
+// Servico grava o boleto PENDENTE e a mensagem na outbox.
+// Quem publica é o relay, fora deste pedido.
 type Servico struct {
 	repo Repositorio
-	pub  Publicador
 }
 
-func NovoServico(repo Repositorio, pub Publicador) *Servico {
-	return &Servico{repo: repo, pub: pub}
+func NovoServico(repo Repositorio) *Servico {
+	return &Servico{repo: repo}
 }
 
 // Emitir espera dados que já passaram por Validar.
+// O POST responde mesmo se o RabbitMQ estiver fora: a outbox segura a mensagem.
 func (s *Servico) Emitir(ctx context.Context, dados Dados) (Boleto, error) {
 	boleto := Boleto{
 		ID:            uuid.NewString(),
@@ -27,12 +28,11 @@ func (s *Servico) Emitir(ctx context.Context, dados Dados) (Boleto, error) {
 		Status:        StatusPendente,
 		CriadoEm:      time.Now().UTC(),
 	}
-	if err := s.repo.Salvar(ctx, boleto); err != nil {
+	evento, err := Codificar(boleto)
+	if err != nil {
 		return Boleto{}, err
 	}
-	// O boleto já está PENDENTE. Se a fila recusar, o cliente recebe erro
-	// e a mensagem não sai. Não há outbox: ver ADR-002.
-	if err := s.pub.PublicarBoletoEmitido(ctx, boleto); err != nil {
+	if err := s.repo.Salvar(ctx, boleto, evento); err != nil {
 		return Boleto{}, err
 	}
 	return boleto, nil

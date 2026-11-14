@@ -2,6 +2,7 @@ package boleto
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -9,25 +10,15 @@ import (
 
 type repoFake struct {
 	boleto   Boleto
+	evento   []byte
 	err      error
 	chamadas int
 }
 
-func (f *repoFake) Salvar(_ context.Context, b Boleto) error {
+func (f *repoFake) Salvar(_ context.Context, b Boleto, evento []byte) error {
 	f.chamadas++
 	f.boleto = b
-	return f.err
-}
-
-type pubFake struct {
-	boleto   Boleto
-	err      error
-	chamadas int
-}
-
-func (f *pubFake) PublicarBoletoEmitido(_ context.Context, b Boleto) error {
-	f.chamadas++
-	f.boleto = b
+	f.evento = append([]byte(nil), evento...)
 	return f.err
 }
 
@@ -39,57 +30,40 @@ func dadosDeTeste() Dados {
 	}
 }
 
-func TestEmitirGravaPendenteEPublica(t *testing.T) {
+func TestEmitirGravaPendenteEOutbox(t *testing.T) {
 	repo := &repoFake{}
-	pub := &pubFake{}
-	svc := NovoServico(repo, pub)
+	svc := NovoServico(repo)
 
 	boleto, err := svc.Emitir(context.Background(), dadosDeTeste())
 	if err != nil {
 		t.Fatalf("emitir: %v", err)
 	}
-	if boleto.Status != StatusPendente {
-		t.Fatalf("status = %s", boleto.Status)
-	}
-	if boleto.ID == "" {
-		t.Fatal("id vazio")
-	}
-	if boleto.ValorCentavos != 15050 || boleto.Pagador != "Maria Silva" {
-		t.Fatalf("boleto gravado diferente: %+v", boleto)
+	if boleto.Status != StatusPendente || boleto.ID == "" {
+		t.Fatalf("boleto = %+v", boleto)
 	}
 	if repo.chamadas != 1 || repo.boleto.ID != boleto.ID {
-		t.Fatalf("repositório não recebeu o boleto emitido")
+		t.Fatal("não gravou o boleto")
 	}
-	if pub.chamadas != 1 || pub.boleto.ID != boleto.ID {
-		t.Fatalf("publicador não recebeu o mesmo boleto")
+
+	var msg Mensagem
+	if err := json.Unmarshal(repo.evento, &msg); err != nil {
+		t.Fatal(err)
+	}
+	if msg.ID != boleto.ID || msg.ValorCentavos != 15050 || msg.Pagador != "Maria Silva" || msg.Vencimento != "2026-12-31" {
+		t.Fatalf("evento = %+v", msg)
 	}
 }
 
-func TestEmitirNaoPublicaSeOBancoFalhar(t *testing.T) {
+func TestEmitirDevolveErroDoBanco(t *testing.T) {
 	repo := &repoFake{err: errors.New("banco fora")}
-	pub := &pubFake{}
-	svc := NovoServico(repo, pub)
-
-	_, err := svc.Emitir(context.Background(), dadosDeTeste())
-	if err == nil {
-		t.Fatal("esperava erro")
-	}
-	if pub.chamadas != 0 {
-		t.Fatal("publicou mesmo com falha ao gravar")
-	}
-}
-
-func TestEmitirDevolveErroDoPublicador(t *testing.T) {
-	repo := &repoFake{}
-	pub := &pubFake{err: errors.New("fila fora")}
-	svc := NovoServico(repo, pub)
+	svc := NovoServico(repo)
 
 	_, err := svc.Emitir(context.Background(), dadosDeTeste())
 	if err == nil {
 		t.Fatal("esperava erro")
 	}
 	if repo.chamadas != 1 {
-		t.Fatal("devia ter gravado antes de publicar")
+		t.Fatalf("chamadas = %d", repo.chamadas)
 	}
 }
 

@@ -38,20 +38,11 @@ func main() {
 	}
 	defer pool.Close()
 
-	conn, ch, err := fila.Conectar(ctx, cfg.RabbitMQURL)
-	if err != nil {
-		slog.Error("rabbitmq", "erro", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
-	defer ch.Close()
-	if err := fila.Declarar(ch); err != nil {
-		slog.Error("topologia da fila", "erro", err)
-		os.Exit(1)
-	}
-	fila.AvisarSeCair(ctx, conn)
+	repo := boleto.NovoRepositorio(pool)
+	// O relay publica a outbox. O POST não espera o broker.
+	go fila.Rodar(ctx, cfg.RabbitMQURL, repo)
 
-	servico := boleto.NovoServico(boleto.NovoRepositorio(pool), fila.NovoPublicador(ch))
+	servico := boleto.NovoServico(repo)
 	handler := httpapi.NovoHandler(servico, pool.Ping)
 
 	srv := &http.Server{

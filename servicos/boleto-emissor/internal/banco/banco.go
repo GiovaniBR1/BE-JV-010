@@ -5,14 +5,15 @@ package banco
 
 import (
 	"context"
-	_ "embed"
+	"embed"
 	"fmt"
+	"sort"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-//go:embed sql/001_criar_boletos.sql
-var schema string
+//go:embed sql/*.sql
+var schemas embed.FS
 
 func Conectar(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	pool, err := pgxpool.New(ctx, databaseURL)
@@ -27,8 +28,25 @@ func Conectar(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 }
 
 func Migrar(ctx context.Context, pool *pgxpool.Pool) error {
-	if _, err := pool.Exec(ctx, schema); err != nil {
-		return fmt.Errorf("aplicar schema: %w", err)
+	entradas, err := schemas.ReadDir("sql")
+	if err != nil {
+		return fmt.Errorf("ler schema: %w", err)
+	}
+	nomes := make([]string, 0, len(entradas))
+	for _, entrada := range entradas {
+		if !entrada.IsDir() {
+			nomes = append(nomes, entrada.Name())
+		}
+	}
+	sort.Strings(nomes)
+	for _, nome := range nomes {
+		corpo, err := schemas.ReadFile("sql/" + nome)
+		if err != nil {
+			return fmt.Errorf("ler %s: %w", nome, err)
+		}
+		if _, err := pool.Exec(ctx, string(corpo)); err != nil {
+			return fmt.Errorf("aplicar %s: %w", nome, err)
+		}
 	}
 	return nil
 }

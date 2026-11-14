@@ -7,10 +7,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
-	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-emissor/internal/boleto"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -21,40 +19,6 @@ const (
 	ExchangeDLQ = "boletos.dlx"
 	FilaDLQ     = "boleto.emitido.dlq"
 )
-
-// Publicador publica BoletoEmitido. Implementa boleto.Publicador.
-type Publicador struct {
-	ch *amqp.Channel
-	// O canal do cliente AMQP não aceita duas publicações ao mesmo tempo.
-	mu sync.Mutex
-}
-
-func NovoPublicador(ch *amqp.Channel) *Publicador {
-	return &Publicador{ch: ch}
-}
-
-func (p *Publicador) PublicarBoletoEmitido(ctx context.Context, b boleto.Boleto) error {
-	corpo, err := boleto.Codificar(b)
-	if err != nil {
-		return fmt.Errorf("codificar mensagem: %w", err)
-	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	err = p.ch.PublishWithContext(ctx, Exchange, RoutingKey, false, false, amqp.Publishing{
-		ContentType:  "application/json",
-		DeliveryMode: amqp.Persistent,
-		MessageId:    b.ID,
-		Body:         corpo,
-	})
-	if err != nil {
-		return fmt.Errorf("publicar boleto emitido: %w", err)
-	}
-	return nil
-}
-
-var _ boleto.Publicador = (*Publicador)(nil)
 
 // Conectar tenta de novo por uns 30s. O healthcheck do RabbitMQ
 // às vezes passa um instante antes da porta AMQP aceitar conexão.
