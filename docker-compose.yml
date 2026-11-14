@@ -1,6 +1,5 @@
 # Perfil A: docker compose up --build
-# RabbitMQ e Redis sobem agora para a banca ver a infra.
-# Nenhum serviço publica na fila nem lê o cache nesta parte.
+# A fila está ligada. O Redis sobe, mas o cache fica para a Parte 3.
 
 services:
   postgres-emissor:
@@ -59,7 +58,6 @@ services:
       timeout: 3s
       retries: 10
 
-  # Parte 2: RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
   boleto-emissor:
     build: ./servicos/boleto-emissor
     ports:
@@ -67,8 +65,11 @@ services:
     environment:
       HTTP_PORT: "8080"
       DATABASE_URL: postgres://emissor:emissor@postgres-emissor:5432/emissor?sslmode=disable
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
     depends_on:
       postgres-emissor:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "--no-hsts", "http://127.0.0.1:8080/health"]
@@ -76,7 +77,6 @@ services:
       timeout: 3s
       retries: 10
 
-  # Parte 2: RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
   # Parte 3: REDIS_URL=redis://redis:6379
   boleto-registrador:
     build: ./servicos/boleto-registrador
@@ -85,8 +85,11 @@ services:
     environment:
       HTTP_PORT: "8080"
       DATABASE_URL: postgres://registrador:registrador@postgres-registrador:5432/registrador?sslmode=disable
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
     depends_on:
       postgres-registrador:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "--no-hsts", "http://127.0.0.1:8080/health"]

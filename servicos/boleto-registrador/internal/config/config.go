@@ -5,11 +5,11 @@ import (
 	"os"
 )
 
-// Config vem do ambiente.
-// A Parte 2 acrescenta RABBITMQ_URL e a Parte 3, REDIS_URL.
+// Config vem do ambiente. A Parte 3 acrescenta REDIS_URL.
 type Config struct {
 	Porta       string
 	DatabaseURL string
+	RabbitMQURL string
 }
 
 func Carregar() (Config, error) {
@@ -21,5 +21,9 @@ func Carregar() (Config, error) {
 	if url == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL é obrigatória")
 	}
-	return Config{Porta: porta, DatabaseURL: url}, nil
+	rabbit := os.Getenv("RABBITMQ_URL")
+	if rabbit == "" {
+		return Config{}, fmt.Errorf("RABBITMQ_URL é obrigatória")
+	}
+	return Config{Porta: porta, DatabaseURL: url, RabbitMQURL: rabbit}, nil
 }
