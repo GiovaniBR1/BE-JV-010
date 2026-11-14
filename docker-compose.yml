@@ -1,0 +1,102 @@
+# Perfil A: docker compose up --build
+# A fila está ligada. O Redis sobe, mas o cache fica para a Parte 3.
+
+services:
+  postgres-emissor:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: emissor
+      POSTGRES_PASSWORD: emissor
+      POSTGRES_DB: emissor
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-emissor:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U emissor -d emissor"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-registrador:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: registrador
+      POSTGRES_PASSWORD: registrador
+      POSTGRES_DB: registrador
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-registrador:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U registrador -d registrador"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  boleto-emissor:
+    build: ./servicos/boleto-emissor
+    ports:
+      - "8080:8080"
+    environment:
+      HTTP_PORT: "8080"
+      DATABASE_URL: postgres://emissor:emissor@postgres-emissor:5432/emissor?sslmode=disable
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      postgres-emissor:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--no-hsts", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Parte 3: REDIS_URL=redis://redis:6379
+  boleto-registrador:
+    build: ./servicos/boleto-registrador
+    ports:
+      - "8081:8080"
+    environment:
+      HTTP_PORT: "8080"
+      DATABASE_URL: postgres://registrador:registrador@postgres-registrador:5432/registrador?sslmode=disable
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      postgres-registrador:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--no-hsts", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-emissor:
+  postgres-registrador:

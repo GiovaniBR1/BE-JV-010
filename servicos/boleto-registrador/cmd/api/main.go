@@ -1,0 +1,101 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-registrador/internal/banco"
+	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-registrador/internal/config"
+	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-registrador/internal/fila"
+	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-registrador/internal/httpapi"
+	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-registrador/internal/registro"
+)
+
+func main() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	cfg, err := config.Carregar()
+	if err != nil {
+		slog.Error("configuração", "erro", err)
+		os.Exit(1)
+	}
+
+	ctx, parar := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer parar()
+
+	pool, err := abrirBanco(ctx, cfg.DatabaseURL)
+	if err != nil {
+		slog.Error("banco", "erro", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	conn, ch, err := fila.Conectar(ctx, cfg.RabbitMQURL)
+	if err != nil {
+		slog.Error("rabbitmq", "erro", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+	defer ch.Close()
+	if err := fila.Declarar(ch); err != nil {
+		slog.Error("topologia da fila", "erro", err)
+		os.Exit(1)
+	}
+	fila.AvisarSeCair(ctx, conn)
+
+	consumidor := fila.NovoConsumidor(ch, registro.NovoRepositorio(pool))
+	go func() {
+		if err := consumidor.Iniciar(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("consumidor", "erro", err)
+			parar()
+		}
+	}()
+
+	handler := httpapi.NovoHandler(pool.Ping)
+
+	srv := &http.Server{
+		Addr:              ":" + cfg.Porta,
+		Handler:           handler.Rotas(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+		prazo, cancelar := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelar()
+		if err := srv.Shutdown(prazo); err != nil {
+			slog.Error("desligar http", "erro", err)
+		}
+	}()
+
+	slog.Info("boleto-registrador escutando", "porta", cfg.Porta, "fila", fila.Fila)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Error("http", "erro", err)
+		os.Exit(1)
+	}
+}
+
+func abrirBanco(ctx context.Context, url string) (*pgxpool.Pool, error) {
+	prazo, cancelar := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelar()
+
+	pool, err := banco.Conectar(prazo, url)
+	if err != nil {
+		return nil, err
+	}
+	if err := banco.Migrar(prazo, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return pool, nil
+}

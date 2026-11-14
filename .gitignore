@@ -1,0 +1,8 @@
+# binários locais
+/bin/
+*.exe
+*.test
+coverage.out
+
+# ambiente da máquina, não do compose
+.env
