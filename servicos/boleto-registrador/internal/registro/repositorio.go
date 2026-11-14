@@ -10,8 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Repositorio guarda a cópia local. A Parte 2 chama BuscarPorID antes de
-// Salvar: se o id já existe, a mensagem repetida não vira outra linha.
+// Repositorio guarda a cópia local. O id do emissor é a chave primária.
 type Repositorio struct {
 	pool *pgxpool.Pool
 }
@@ -20,16 +19,19 @@ func NovoRepositorio(pool *pgxpool.Pool) *Repositorio {
 	return &Repositorio{pool: pool}
 }
 
-func (r *Repositorio) Salvar(ctx context.Context, reg Registro) error {
-	_, err := r.pool.Exec(ctx, `
+// Registrar grava o boleto. Se o id já existe, não muda a linha e devolve
+// novo=false. O INSERT é atômico: duas entregas juntas ainda geram uma linha.
+func (r *Repositorio) Registrar(ctx context.Context, reg Registro) (bool, error) {
+	tag, err := r.pool.Exec(ctx, `
 		INSERT INTO boletos_registrados (
 			id, valor_centavos, vencimento, pagador, status, registrado_em
 		) VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (id) DO NOTHING
 	`, reg.ID, reg.ValorCentavos, reg.Vencimento.Format("2006-01-02"), reg.Pagador, reg.Status, reg.RegistradoEm)
 	if err != nil {
-		return fmt.Errorf("salvar registro: %w", err)
+		return false, fmt.Errorf("salvar registro: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() == 1, nil
 }
 
 func (r *Repositorio) BuscarPorID(ctx context.Context, id string) (Registro, bool, error) {

@@ -30,8 +30,8 @@ func (s *Servico) Emitir(ctx context.Context, dados Dados) (Boleto, error) {
 	if err := s.repo.Salvar(ctx, boleto); err != nil {
 		return Boleto{}, err
 	}
-	// Se a Parte 2 publicar e a fila recusar, o boleto já está PENDENTE
-	// e o cliente recebe erro. O noop desta parte não falha.
+	// O boleto já está PENDENTE. Se a fila recusar, o cliente recebe erro
+	// e a mensagem não sai. Não há outbox: ver ADR-002.
 	if err := s.pub.PublicarBoletoEmitido(ctx, boleto); err != nil {
 		return Boleto{}, err
 	}

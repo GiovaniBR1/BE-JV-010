@@ -2,20 +2,20 @@
 
 Projeto final individual do módulo BE-JV-010 (Ada Tech).
 
-O cliente pede um boleto. O serviço `boleto-emissor` valida o pedido e grava o boleto como `PENDENTE` no Postgres dele. Na parte seguinte, ele publica a mensagem `BoletoEmitido`. O `boleto-registrador` vai consumir essa mensagem, simular o registro no banco e guardar a própria cópia. A leitura com cache fica para a Parte 3.
+O cliente pede um boleto. O serviço `boleto-emissor` valida o pedido, grava o boleto como `PENDENTE` no Postgres dele e publica `BoletoEmitido` no RabbitMQ. O `boleto-registrador` consome a mensagem, simula o registro no banco e guarda a própria cópia. Se a mesma mensagem chegar de novo, fica uma linha só. A leitura com cache fica para a Parte 3.
 
 Perfil **A**: tudo sobe com Docker.
 
 ## Desenho
 
-A linha cheia é o que a Parte 1 faz. A linha pontilhada é o lugar da fila e do cache, ainda sem código.
+A linha cheia é o que já roda. A linha pontilhada é o cache, ainda sem código.
 
 ```mermaid
 flowchart LR
     Cliente["Cliente"] -->|"POST /boletos"| Emissor["boleto-emissor"]
     Emissor --> PG1[("Postgres do emissor")]
-    Emissor -.->|"BoletoEmitido (Parte 2)"| Fila["RabbitMQ"]
-    Fila -.-> Registrador["boleto-registrador"]
+    Emissor -->|"BoletoEmitido"| Fila["RabbitMQ"]
+    Fila --> Registrador["boleto-registrador"]
     Registrador --> PG2[("Postgres do registrador")]
     Registrador -.-> Redis[("Redis (Parte 3)")]
     Cliente -.->|"GET /boletos/id (Parte 3)"| Registrador
@@ -23,7 +23,7 @@ flowchart LR
 
 ## Por que Go
 
-O desafio não prende a stack ao Spring das aulas. Go 1.22 resolve o HTTP, o JSON e os testes com a biblioteca padrão: o `net/http` já roteia por método e caminho. Cada serviço vira um binário só, simples de colocar no Docker. A fila e o cache entram depois, por trás de duas interfaces pequenas: `Publicador` no emissor e `Consumidor` no registrador.
+O desafio não prende a stack ao Spring das aulas. Go 1.22 resolve o HTTP, o JSON e os testes com a biblioteca padrão: o `net/http` já roteia por método e caminho. Cada serviço vira um binário só, simples de colocar no Docker. A fila entra por trás de `Publicador` e `Consumidor`. O cache, na Parte 3, entra do mesmo jeito.
 
 ## Como rodar
 
@@ -82,7 +82,43 @@ docker compose exec postgres-emissor \
   -c 'select id, valor_centavos, vencimento, pagador, status from boletos;'
 ```
 
-Para encerrar: `docker compose down`.
+Espere um instante. A mesma linha aparece no registrador, com status `REGISTRADO`:
+
+```bash
+docker compose exec postgres-registrador \
+  psql -U registrador -d registrador \
+  -c 'select id, valor_centavos, vencimento, pagador, status from boletos_registrados;'
+```
+
+No log do registrador, a primeira entrega escreve `boleto registrado`. Para encerrar: `docker compose down`.
+
+## Como conferir a mensagem repetida
+
+A fila entrega "pelo menos uma vez". O registrador grava uma vez só, pela chave primária.
+
+1. Suba o projeto e abra o painel do RabbitMQ em http://localhost:15672 (`guest` / `guest`).
+2. Em **Exchanges**, abra `boletos`, em **Publish message**.
+3. Routing key: `boleto.emitido`. Payload:
+
+```json
+{
+  "id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "valor_centavos": 15050,
+  "vencimento": "2026-12-31",
+  "pagador": "Maria Silva",
+  "emitido_em": "2026-11-14T18:00:00Z"
+}
+```
+
+4. Publique esse JSON duas vezes.
+5. Rode o `select` do registrador. Fica uma linha só com esse `id`.
+6. No log, a segunda vez aparece como `mensagem repetida, registro já existia`:
+
+```bash
+docker compose logs boleto-registrador
+```
+
+Um JSON quebrado (por exemplo `{}`) não volta para a fila. Ele cai em **Queues** → `boleto.emitido.dlq`.
 
 ## Contrato do POST /boletos
 
@@ -94,34 +130,35 @@ Para encerrar: `docker compose down`.
 
 O serviço gera o `id` e grava `status: "PENDENTE"`. O cliente não escolhe o estado.
 
-A mensagem `BoletoEmitido`, quando a Parte 2 publicar, leva o que o registrador precisa guardar sem chamar o emissor de volta:
+A mensagem `BoletoEmitido` leva o que o registrador precisa guardar sem chamar o emissor de volta. `valor_centavos` é inteiro, a mesma unidade do banco:
 
 ```json
 {
   "id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
-  "valor": "150.50",
+  "valor_centavos": 15050,
   "vencimento": "2026-12-31",
   "pagador": "Maria Silva",
   "emitido_em": "2026-11-14T18:00:00Z"
 }
 ```
 
-O `id` é a chave primária em `boletos_registrados`. Se a mensagem chegar duas vezes, a segunda não cria outra linha.
+O `id` é a chave primária em `boletos_registrados`. O `INSERT` usa `ON CONFLICT (id) DO NOTHING`.
 
 ## Decisões
 
 - [ADR-001](docs/adr/ADR-001-banco-por-servico.md): dois serviços, cada um com o seu Postgres.
-- ADR-002 (fila em vez de HTTP) e ADR-003 (cache) ficam para as partes 2 e 3.
+- [ADR-002](docs/adr/ADR-002-fila-rabbitmq-idempotencia.md): fila em vez de HTTP, e a mensagem repetida não duplica.
+- ADR-003 (cache) fica para a Parte 3.
 
 ## Status
 
-- Parte 1 (tema, desenho e esqueleto): feita. Os dois serviços sobem e o emissor grava o boleto como `PENDENTE`.
-- Parte 2 (fila): pendente. O emissor já chama um `Publicador`; hoje ele não faz nada. O registrador já tem a tabela e a interface `Consumidor`.
+- Parte 1 (tema, desenho e esqueleto): feita.
+- Parte 2 (fila): feita. O emissor publica `BoletoEmitido`. O registrador consome, grava `REGISTRADO` uma vez e confirma a mensagem.
 - Parte 3 (cache): pendente. O Redis sobe com o compose. O `GET /boletos/{id}` ainda não existe.
 
 ## Uso de IA
 
-O código e os textos foram escritos com assistência de IA no Cursor. As decisões (divisão dos serviços, valor em centavos, vencimento no fuso de São Paulo, Go em vez de Spring) foram revistas pelo autor, que explica cada uma na banca.
+O código e os textos foram escritos com assistência de IA no Cursor. As decisões (divisão dos serviços, valor em centavos, vencimento no fuso de São Paulo, fila em vez de HTTP, Go em vez de Spring) foram revistas pelo autor, que explica cada uma na banca.
 
 ## Testes
 

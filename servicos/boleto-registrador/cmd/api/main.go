@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-registrador/internal/banco"
 	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-registrador/internal/config"
+	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-registrador/internal/fila"
 	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-registrador/internal/httpapi"
 	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-registrador/internal/registro"
 )
@@ -38,9 +38,27 @@ func main() {
 	}
 	defer pool.Close()
 
-	// A Parte 2 chama Iniciar num consumidor de verdade.
-	// Hoje o noop só segura o repositório, e ninguém escuta a fila.
-	consumidor := registro.ConsumidorNoop{Repo: registro.NovoRepositorio(pool)}
+	conn, ch, err := fila.Conectar(ctx, cfg.RabbitMQURL)
+	if err != nil {
+		slog.Error("rabbitmq", "erro", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+	defer ch.Close()
+	if err := fila.Declarar(ch); err != nil {
+		slog.Error("topologia da fila", "erro", err)
+		os.Exit(1)
+	}
+	fila.AvisarSeCair(ctx, conn)
+
+	consumidor := fila.NovoConsumidor(ch, registro.NovoRepositorio(pool))
+	go func() {
+		if err := consumidor.Iniciar(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("consumidor", "erro", err)
+			parar()
+		}
+	}()
+
 	handler := httpapi.NovoHandler(pool.Ping)
 
 	srv := &http.Server{
@@ -60,7 +78,7 @@ func main() {
 		}
 	}()
 
-	slog.Info("boleto-registrador escutando", "porta", cfg.Porta, "consumidor", fmt.Sprintf("%T", consumidor))
+	slog.Info("boleto-registrador escutando", "porta", cfg.Porta, "fila", fila.Fila)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("http", "erro", err)
 		os.Exit(1)

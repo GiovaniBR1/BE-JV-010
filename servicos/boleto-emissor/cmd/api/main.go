@@ -15,6 +15,7 @@ import (
 	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-emissor/internal/banco"
 	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-emissor/internal/boleto"
 	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-emissor/internal/config"
+	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-emissor/internal/fila"
 	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-emissor/internal/httpapi"
 )
 
@@ -37,7 +38,20 @@ func main() {
 	}
 	defer pool.Close()
 
-	servico := boleto.NovoServico(boleto.NovoRepositorio(pool), boleto.PublicadorNoop{})
+	conn, ch, err := fila.Conectar(ctx, cfg.RabbitMQURL)
+	if err != nil {
+		slog.Error("rabbitmq", "erro", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+	defer ch.Close()
+	if err := fila.Declarar(ch); err != nil {
+		slog.Error("topologia da fila", "erro", err)
+		os.Exit(1)
+	}
+	fila.AvisarSeCair(ctx, conn)
+
+	servico := boleto.NovoServico(boleto.NovoRepositorio(pool), fila.NovoPublicador(ch))
 	handler := httpapi.NovoHandler(servico, pool.Ping)
 
 	srv := &http.Server{
