@@ -64,3 +64,14 @@ func Decodificar(corpo []byte) (Mensagem, error) {
 		EmitidoEm:     emitidoEm.UTC(),
 	}, nil
 }
+
+// CodificarRegistrado avisa o emissor que este id foi registrado.
+func CodificarRegistrado(id string, quando time.Time) ([]byte, error) {
+	return json.Marshal(struct {
+		ID           string `json:"id"`
+		RegistradoEm string `json:"registrado_em"`
+	}{
+		ID:           id,
+		RegistradoEm: quando.UTC().Format(time.RFC3339),
+	})
+}

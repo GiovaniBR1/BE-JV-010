@@ -9,15 +9,22 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// Rodar publica a outbox até o contexto cancelar.
+// Dependencias junta a outbox, a troca de status e o cache.
+type Dependencias struct {
+	Caixa Caixa
+	Atual Atualizador
+	Cache Apagador
+}
+
+// Rodar publica a outbox e escuta boleto.registrado até o contexto cancelar.
 // Se a conexão cai, espera e abre outra, declarando a topologia de novo.
-func Rodar(ctx context.Context, url string, caixa Caixa) {
+func Rodar(ctx context.Context, url string, dep Dependencias) {
 	espera := time.Second
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		err := sessao(ctx, url, caixa)
+		err := sessao(ctx, url, dep)
 		if ctx.Err() != nil {
 			return
 		}
@@ -35,7 +42,7 @@ func Rodar(ctx context.Context, url string, caixa Caixa) {
 	}
 }
 
-func sessao(ctx context.Context, url string, caixa Caixa) error {
+func sessao(ctx context.Context, url string, dep Dependencias) error {
 	conn, ch, err := Conectar(ctx, url)
 	if err != nil {
 		return err
@@ -50,8 +57,21 @@ func sessao(ctx context.Context, url string, caixa Caixa) error {
 	}
 	// Buffer 1 e uma publicação por vez: cada confirm casa com o publish anterior.
 	confirms := ch.NotifyPublish(make(chan amqp.Confirmation, 1))
-	fechou := conn.NotifyClose(make(chan *amqp.Error, 1))
 
+	escuta, err := conn.Channel()
+	if err != nil {
+		return fmt.Errorf("canal de escuta: %w", err)
+	}
+	defer escuta.Close()
+	if err := escuta.Qos(10, 0, false); err != nil {
+		return fmt.Errorf("prefetch: %w", err)
+	}
+	entregas, err := escuta.Consume(FilaRegistrado, "", false, false, false, false, nil)
+	if err != nil {
+		return fmt.Errorf("consumir registrado: %w", err)
+	}
+
+	fechou := conn.NotifyClose(make(chan *amqp.Error, 1))
 	pub := &publicadorConfirmado{ch: ch, confirms: confirms}
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -65,8 +85,15 @@ func sessao(ctx context.Context, url string, caixa Caixa) error {
 				return fmt.Errorf("conexão fechou")
 			}
 			return fmt.Errorf("conexão fechou: %w", err)
+		case entrega, ok := <-entregas:
+			if !ok {
+				return fmt.Errorf("canal de boleto.registrado fechou")
+			}
+			if err := tratarRegistrado(ctx, dep.Atual, dep.Cache, entrega); err != nil {
+				return err
+			}
 		case <-ticker.C:
-			if err := EntregarPendentes(ctx, caixa, pub); err != nil {
+			if err := EntregarPendentes(ctx, dep.Caixa, pub); err != nil {
 				return err
 			}
 		}

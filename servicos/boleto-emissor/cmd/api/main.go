@@ -14,6 +14,7 @@ import (
 
 	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-emissor/internal/banco"
 	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-emissor/internal/boleto"
+	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-emissor/internal/cache"
 	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-emissor/internal/config"
 	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-emissor/internal/fila"
 	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-emissor/internal/httpapi"
@@ -39,11 +40,28 @@ func main() {
 	defer pool.Close()
 
 	repo := boleto.NovoRepositorio(pool)
-	// O relay publica a outbox. O POST não espera o broker.
-	go fila.Rodar(ctx, cfg.RabbitMQURL, repo)
+	var memoria *cache.Redis
+	if cfg.RedisURL != "" {
+		criado, errRedis := cache.Novo(cfg.RedisURL, cfg.CacheTTL)
+		if errRedis != nil {
+			slog.Error("redis", "erro", errRedis)
+			os.Exit(1)
+		}
+		memoria = criado
+	}
+	deps := fila.Dependencias{Caixa: repo, Atual: repo}
+	if memoria != nil {
+		deps.Cache = memoria
+	}
+	// O relay publica a outbox e aplica boleto.registrado. O POST não espera o broker.
+	go fila.Rodar(ctx, cfg.RabbitMQURL, deps)
 
 	servico := boleto.NovoServico(repo)
 	handler := httpapi.NovoHandler(servico, pool.Ping)
+	handler.Consulta = repo
+	if memoria != nil {
+		handler.Cache = memoria
+	}
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Porta,

@@ -39,3 +39,7 @@ depois do confirm e antes de marcar `enviado_em`. O registrador já
 grava uma vez só, pela chave primária.
 
 O relay é um loop dentro do emissor. Não há um segundo processo.
+
+O aviso `boleto.registrado` não tem outbox. Se a publicação falha, a
+mensagem `boleto.emitido` não é confirmada e volta para a fila. Na
+próxima entrega o registrador acha o id e publica o aviso de novo.

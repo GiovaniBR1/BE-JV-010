@@ -2,9 +2,12 @@ package boleto
 
 import "time"
 
-// StatusPendente é o único estado que o emissor grava.
-// Quem marca o boleto como registrado é o outro serviço.
-const StatusPendente = "PENDENTE"
+const (
+	// StatusPendente é o estado de um boleto recém-pedido.
+	StatusPendente = "PENDENTE"
+	// StatusRegistrado chega pelo aviso boleto.registrado.
+	StatusRegistrado = "REGISTRADO"
+)
 
 // Boleto é a emissão pedida pelo cliente e guardada no Postgres do emissor.
 type Boleto struct {

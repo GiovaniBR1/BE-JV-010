@@ -38,28 +38,11 @@ func main() {
 	}
 	defer pool.Close()
 
-	conn, ch, err := fila.Conectar(ctx, cfg.RabbitMQURL)
-	if err != nil {
-		slog.Error("rabbitmq", "erro", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
-	defer ch.Close()
-	if err := fila.Declarar(ch); err != nil {
-		slog.Error("topologia da fila", "erro", err)
-		os.Exit(1)
-	}
-	fila.AvisarSeCair(ctx, conn)
-
-	consumidor := fila.NovoConsumidor(ch, registro.NovoRepositorio(pool))
-	go func() {
-		if err := consumidor.Iniciar(ctx); err != nil && ctx.Err() == nil {
-			slog.Error("consumidor", "erro", err)
-			parar()
-		}
-	}()
+	repo := registro.NovoRepositorio(pool)
+	go fila.Rodar(ctx, cfg.RabbitMQURL, repo)
 
 	handler := httpapi.NovoHandler(pool.Ping)
+	handler.Consulta = repo
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Porta,

@@ -2,10 +2,12 @@ package boleto
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -95,6 +97,36 @@ func (r *RepositorioPostgres) MarcarEnviado(ctx context.Context, id string) erro
 		return fmt.Errorf("marcar outbox enviada: %w", err)
 	}
 	return nil
+}
+
+func (r *RepositorioPostgres) BuscarPorID(ctx context.Context, id string) (Boleto, bool, error) {
+	var (
+		b          Boleto
+		vencimento time.Time
+	)
+	err := r.pool.QueryRow(ctx, `
+		SELECT id::text, valor_centavos, vencimento, pagador, status, criado_em
+		FROM boletos
+		WHERE id = $1
+	`, id).Scan(&b.ID, &b.ValorCentavos, &vencimento, &b.Pagador, &b.Status, &b.CriadoEm)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Boleto{}, false, nil
+	}
+	if err != nil {
+		return Boleto{}, false, fmt.Errorf("buscar boleto: %w", err)
+	}
+	b.Vencimento = vencimento
+	return b, true, nil
+}
+
+func (r *RepositorioPostgres) MarcarRegistrado(ctx context.Context, id string) (bool, error) {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE boletos SET status = $2 WHERE id = $1
+	`, id, StatusRegistrado)
+	if err != nil {
+		return false, fmt.Errorf("marcar registrado: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 func (r *RepositorioPostgres) Adiar(ctx context.Context, id string, quando time.Time) error {
