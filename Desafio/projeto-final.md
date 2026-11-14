@@ -52,10 +52,10 @@ Entregue um repositório no GitHub (ou um zip) com o código, os ADRs e o README
 
 Faça commits aos poucos, não tudo no último dia. Para isso, há uma sugestão para cada aula:
 
-1. [O tema, o desenho e o esqueleto](parte-1-tema-e-esqueleto.md)
-2. [A fila](parte-2-fila.md)
-3. [O cache](parte-3-cache.md)
-4. [Fechar e ensaiar](parte-4-fechamento.md)
+1. [O tema, o desenho e o esqueleto](../Aulas/parte-1-tema-e-esqueleto.md)
+2. [A fila](../Aulas/parte-2-fila.md)
+3. [O cache](../Aulas/parte-3-cache.md)
+4. [Fechar e ensaiar](../Aulas/parte-4-fechamento.md)
 
 ---
 
