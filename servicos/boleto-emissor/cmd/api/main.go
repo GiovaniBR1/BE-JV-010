@@ -88,16 +88,27 @@ func main() {
 }
 
 func abrirBanco(ctx context.Context, url string) (*pgxpool.Pool, error) {
-	prazo, cancelar := context.WithTimeout(ctx, 10*time.Second)
-	defer cancelar()
-
-	pool, err := banco.Conectar(prazo, url)
-	if err != nil {
-		return nil, err
+	var ultimo error
+	for tentativa := 1; tentativa <= 15; tentativa++ {
+		prazo, cancelar := context.WithTimeout(ctx, 5*time.Second)
+		pool, err := banco.Conectar(prazo, url)
+		if err == nil {
+			err = banco.Migrar(prazo, pool)
+		}
+		cancelar()
+		if err == nil {
+			return pool, nil
+		}
+		if pool != nil {
+			pool.Close()
+		}
+		ultimo = err
+		slog.Warn("banco indisponível", "tentativa", tentativa, "erro", ultimo)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
 	}
-	if err := banco.Migrar(prazo, pool); err != nil {
-		pool.Close()
-		return nil, err
-	}
-	return pool, nil
+	return nil, ultimo
 }
