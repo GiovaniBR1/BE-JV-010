@@ -2,35 +2,34 @@
 
 Projeto final individual do módulo BE-JV-010 (Ada Tech).
 
-O cliente pede um boleto. O serviço `boleto-emissor` valida o pedido, grava o boleto como `PENDENTE` no Postgres dele e publica `BoletoEmitido` no RabbitMQ. O `boleto-registrador` consome a mensagem, simula o registro no banco e guarda a própria cópia. Se a mesma mensagem chegar de novo, fica uma linha só. A leitura com cache fica para a Parte 3.
+O cliente pede um boleto. O `boleto-emissor` valida, grava `PENDENTE` no Postgres dele e deixa o JSON numa outbox, na mesma transação. Um relay publica `BoletoEmitido` no RabbitMQ quando o broker confirma. O `boleto-registrador` consome, simula o registro e grava a própria cópia uma vez só. Ele devolve `boleto.registrado`. O emissor muda o status para `REGISTRADO` e apaga a cópia no Redis.
 
 Perfil **A**: tudo sobe com Docker.
 
 ## Desenho
 
-A linha cheia é o que já roda. A linha pontilhada é o cache, ainda sem código.
-
 ```mermaid
 flowchart LR
-    Cliente["Cliente"] -->|"POST /boletos"| Emissor["boleto-emissor"]
+    Cliente["Cliente"] -->|"POST e GET /boletos"| Emissor["boleto-emissor"]
     Emissor --> PG1[("Postgres do emissor")]
+    Emissor --> Redis[("Redis")]
     Emissor -->|"BoletoEmitido"| Fila["RabbitMQ"]
     Fila --> Registrador["boleto-registrador"]
+    Registrador -->|"boleto.registrado"| Fila
     Registrador --> PG2[("Postgres do registrador")]
-    Registrador -.-> Redis[("Redis (Parte 3)")]
-    Cliente -.->|"GET /boletos/id (Parte 3)"| Registrador
+    Cliente -->|"GET /boletos/id"| Registrador
 ```
 
 ## Por que Go
 
-O desafio não prende a stack ao Spring das aulas. Go 1.22 resolve o HTTP, o JSON e os testes com a biblioteca padrão: o `net/http` já roteia por método e caminho. Cada serviço vira um binário só, simples de colocar no Docker. A fila entra por trás de `Publicador` e `Consumidor`. O cache, na Parte 3, entra do mesmo jeito.
+O desafio não prende a stack ao Spring das aulas. Go 1.22 resolve o HTTP, o JSON e os testes com a biblioteca padrão: o `net/http` já roteia por método e caminho. Cada serviço vira um binário só, simples de colocar no Docker. A fila fica atrás de um relay e de um consumidor. O cache fica atrás de uma interface pequena, então o GET continua de pé se o Redis cair.
 
 ## Como rodar
 
 É preciso ter Docker com Compose v2. Na raiz do repositório:
 
 ```bash
-docker compose up --build
+docker compose up --build -d
 ```
 
 | O quê | Onde |
@@ -43,8 +42,6 @@ docker compose up --build
 | Redis | localhost:6379 |
 
 As senhas são só para a máquina local da banca.
-
-Saúde dos dois serviços:
 
 ```bash
 curl -s http://localhost:8080/health
@@ -59,44 +56,25 @@ curl -s -X POST http://localhost:8080/boletos \
   -d '{"valor":"150.50","vencimento":"2026-12-31","pagador":"Maria Silva"}'
 ```
 
-Resposta `201`:
+A resposta é `201` mesmo se o RabbitMQ estiver fora, porque a mensagem ficou na outbox. Pedido inválido responde `400` com `{"erros":["..."]}`.
 
-```json
-{
-  "id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
-  "valor": "150.50",
-  "vencimento": "2026-12-31",
-  "pagador": "Maria Silva",
-  "status": "PENDENTE",
-  "criado_em": "2026-11-14T18:00:00Z"
-}
-```
-
-Pedido inválido responde `400` com `{"erros":["..."]}`.
-
-Conferir a linha no banco do emissor. A coluna é `BIGINT` (`valor_centavos`), a mesma unidade do código: `15050` significa R$ 150,50. O driver não converte decimal na gravação, e o valor não passa por `float`.
+Conferir os dois bancos. `valor_centavos` é inteiro: `15050` significa R$ 150,50.
 
 ```bash
 docker compose exec postgres-emissor \
   psql -U emissor -d emissor \
-  -c 'select id, valor_centavos, vencimento, pagador, status from boletos;'
-```
+  -c 'select id, valor_centavos, status from boletos;'
 
-Espere um instante. A mesma linha aparece no registrador, com status `REGISTRADO`:
-
-```bash
 docker compose exec postgres-registrador \
   psql -U registrador -d registrador \
-  -c 'select id, valor_centavos, vencimento, pagador, status from boletos_registrados;'
+  -c 'select id, valor_centavos, status from boletos_registrados;'
 ```
 
-No log do registrador, a primeira entrega escreve `boleto registrado`. Para encerrar: `docker compose down`.
+Para encerrar: `docker compose down`.
 
 ## Como conferir a mensagem repetida
 
-A fila entrega "pelo menos uma vez". O registrador grava uma vez só, pela chave primária.
-
-1. Suba o projeto e abra o painel do RabbitMQ em http://localhost:15672 (`guest` / `guest`).
+1. Suba o projeto e abra http://localhost:15672 (`guest` / `guest`).
 2. Em **Exchanges**, abra `boletos`, em **Publish message**.
 3. Routing key: `boleto.emitido`. Payload:
 
@@ -111,16 +89,40 @@ A fila entrega "pelo menos uma vez". O registrador grava uma vez só, pela chave
 ```
 
 4. Publique esse JSON duas vezes.
-5. Rode o `select` do registrador. Fica uma linha só com esse `id`.
-6. No log, a segunda vez aparece como `mensagem repetida, registro já existia`:
+5. O `select` do registrador fica com uma linha só. O log diz `mensagem repetida, registro já existia`.
 
 ```bash
 docker compose logs boleto-registrador
 ```
 
-Um JSON quebrado (por exemplo `{}`) não volta para a fila. Ele cai em **Queues** → `boleto.emitido.dlq`.
+Um JSON quebrado (por exemplo `{}`) cai em **Queues** → `boleto.emitido.dlq`.
 
-## Contrato do POST /boletos
+## Como conferir o cache
+
+Depois que o emissor estiver `REGISTRADO`:
+
+```bash
+curl -sD - http://localhost:8080/boletos/ID | grep -i x-cache
+curl -sD - http://localhost:8080/boletos/ID | grep -i x-cache
+```
+
+A primeira resposta traz `X-Cache: miss`. A segunda, `X-Cache: hit`. Um id que não existe responde `404` e não é guardado. Se o Redis cair, o header vai `bypass` e o JSON ainda sai do Postgres.
+
+## Como conferir a outbox
+
+```bash
+docker compose stop rabbitmq
+curl -s -X POST http://localhost:8080/boletos \
+  -H 'Content-Type: application/json' \
+  -d '{"valor":"10.00","vencimento":"2026-12-31","pagador":"Ana"}'
+docker compose start rabbitmq
+```
+
+O `POST` responde `201`. A linha nasce na tabela `outbox` com `enviado_em` nulo. Quando o broker volta, o relay publica e preenche `enviado_em`.
+
+O script `./scripts/e2e.sh` faz o caminho feliz: POST, espera o registrador, confere miss e hit, publica a mesma mensagem de novo e exige uma linha só.
+
+## Contrato
 
 | Campo | Regra |
 |---|---|
@@ -128,9 +130,7 @@ Um JSON quebrado (por exemplo `{}`) não volta para a fila. Ele cai em **Queues*
 | `vencimento` | `AAAA-MM-DD`. Data real. Anterior a hoje em São Paulo é rejeitada. Hoje passa. |
 | `pagador` | Nome, sem CPF. Obrigatório depois do `trim`, no máximo 255 caracteres. |
 
-O serviço gera o `id` e grava `status: "PENDENTE"`. O cliente não escolhe o estado.
-
-A mensagem `BoletoEmitido` leva o que o registrador precisa guardar sem chamar o emissor de volta. `valor_centavos` é inteiro, a mesma unidade do banco:
+`BoletoEmitido` usa centavos, a mesma unidade do banco:
 
 ```json
 {
@@ -147,26 +147,47 @@ O `id` é a chave primária em `boletos_registrados`. O `INSERT` usa `ON CONFLIC
 ## Decisões
 
 - [ADR-001](docs/adr/ADR-001-banco-por-servico.md): dois serviços, cada um com o seu Postgres.
-- [ADR-002](docs/adr/ADR-002-fila-rabbitmq-idempotencia.md): fila em vez de HTTP, e a mensagem repetida não duplica.
-- ADR-003 (cache) fica para a Parte 3.
+- [ADR-002](docs/adr/ADR-002-fila-rabbitmq-idempotencia.md): fila em vez de HTTP, entrega pelo menos uma vez, mensagem repetida não duplica.
+- [ADR-003](docs/adr/ADR-003-cache-redis.md): o que o cache guarda, o TTL e quando apaga.
+- [ADR-004](docs/adr/ADR-004-outbox.md): a publicação sai da mesma transação do boleto.
 
 ## Status
 
-- Parte 1 (tema, desenho e esqueleto): feita.
-- Parte 2 (fila): feita. O emissor publica `BoletoEmitido`. O registrador consome, grava `REGISTRADO` uma vez e confirma a mensagem.
-- Parte 3 (cache): pendente. O Redis sobe com o compose. O `GET /boletos/{id}` ainda não existe.
-
-## Uso de IA
-
-O código e os textos foram escritos com assistência de IA no Cursor. As decisões (divisão dos serviços, valor em centavos, vencimento no fuso de São Paulo, fila em vez de HTTP, Go em vez de Spring) foram revistas pelo autor, que explica cada uma na banca.
+- Parte 1 (esqueleto): feita.
+- Parte 2 (fila e idempotência): feita.
+- Parte 3 (cache): feita. `GET /boletos/{id}` no emissor, com Redis. O registrador também tem GET, sem cache.
+- Parte 4 (fechamento): este README e o roteiro em `docs/banca.md`.
 
 ## Testes
 
-O `go.work` na raiz lista os dois módulos. Da raiz:
+Unidade, dentro de cada serviço ou da raiz:
 
 ```bash
 go test ./servicos/boleto-emissor/... ./servicos/boleto-registrador/...
 go vet ./servicos/boleto-emissor/... ./servicos/boleto-registrador/...
 ```
 
-Dentro da pasta de cada serviço, o comando é `go test ./...` e `go vet ./...`.
+Integração, com Docker no ar. Sobe Postgres, RabbitMQ e Redis de verdade:
+
+```bash
+go test -tags integration -count=1 -timeout 6m ./servicos/boleto-emissor/internal/integra ./servicos/boleto-registrador/internal/integra
+```
+
+Ponta a ponta, com o compose no ar:
+
+```bash
+docker compose up --build -d
+./scripts/e2e.sh
+```
+
+## Limitações
+
+- Se o relay cair depois do confirm e antes de marcar a outbox, a mensagem sai de novo. O registrador não duplica a linha.
+- Uma leitura que já pegou `PENDENTE` no banco pode gravar essa cópia no Redis logo depois do apagar. O TTL de 5 minutos limita essa janela.
+- O aviso `boleto.registrado` não tem outbox. Se a publicação falha, `boleto.emitido` volta para a fila e o aviso é tentado de novo.
+- Os dois serviços declaram a mesma topologia. Mudar o argumento de uma fila só de um lado quebra a subida do outro.
+- Não há reconexão infinita silenciosa sem log: a queda aparece no log e o loop tenta de novo, com espera de até 15 segundos.
+
+## Uso de IA
+
+O código e os textos foram escritos com assistência de IA no Cursor. As decisões (divisão dos serviços, valor em centavos, vencimento no fuso de São Paulo, fila em vez de HTTP, outbox, cache, Go em vez de Spring) foram revistas pelo autor, que explica cada uma na banca.
