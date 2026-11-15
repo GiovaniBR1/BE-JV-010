@@ -1,84 +1,112 @@
 # Roteiro da banca (10 minutos)
 
-Fale de pé, com o projeto já no ar (`docker compose up --build -d`).
-O relógio abaixo já inclui uma folga para pergunta curta no fim.
+O relógio já inclui as perguntas. O projeto está no ar
+(`docker compose up --build -d`). Fale curto e aponte a tela.
 
-## 0:00 — O que é
+## 0:00 — O que é (40s)
 
-"É uma central de boletos, perfil A, tudo no Docker.
-O cliente pede o boleto num serviço. Outro serviço registra.
-Cada um tem o seu Postgres. No meio tem fila. A leitura quente fica no Redis."
+"Central de boletos, perfil A, tudo no Docker. O cliente pede o boleto
+num serviço. Outro registra. Cada um tem o seu Postgres. No meio tem
+fila. A leitura quente fica no Redis."
 
 Aponte o desenho do README.
 
-## 1:00 — Os dois bancos (ADR-001)
+## 0:40 — Dois bancos, ADR-001 (1min20)
 
-Mostre o `POST`:
+Faça o POST do README. "150,50 vira 15050, sem float. Vencimento de
+ontem volta 400. Hoje é o dia de São Paulo."
 
-```bash
-curl -s -X POST http://localhost:8080/boletos \
-  -H 'Content-Type: application/json' \
-  -d '{"valor":"150.50","vencimento":"2026-12-31","pagador":"Maria Silva"}'
-```
+Mostre os dois `select`. "Bancos diferentes. O id do emissor é a chave
+do registrador."
 
-"O valor não é float. 150 reais e 50 centavos viram 15050, no Go e na coluna.
-O vencimento de ontem volta 400. O dia de hoje é o de São Paulo, não o UTC do container."
+## 2:00 — Fila, ADR-002 (1min30)
 
-Abra os dois `select` do README. "São bancos diferentes. O emissor sabe que pediram.
-O registrador sabe que registrou. O id de um é a chave do outro."
+"Não é HTTP: se o registrador estiver lento, o cliente não espera, e a
+mensagem não se perde. A garantia é pelo menos uma vez, então ela pode
+chegar repetida. O INSERT usa `ON CONFLICT (id) DO NOTHING`."
 
-## 3:00 — A fila (ADR-002)
+No painel http://localhost:15672, publique o JSON de
+`contracts/boleto.emitido.json` duas vezes, routing key `boleto.emitido`.
+Mostre uma linha só.
 
-"Não chamei o registrador por HTTP. Se ele estiver lento, o cliente não espera,
-e a mensagem não se perde: a garantia é pelo menos uma vez.
-Por isso a mesma mensagem pode chegar duas vezes. O INSERT tem
-`ON CONFLICT (id) DO NOTHING`. A segunda vez só dá ack e escreve no log
-que já existia."
+## 3:30 — Outbox, ADR-004 (1min10)
 
-No painel http://localhost:15672, publique o JSON do README duas vezes
-na routing key `boleto.emitido`. Mostre uma linha só.
+"O boleto e o JSON entram na mesma transação. O POST responde 201
+mesmo com o RabbitMQ parado. Um relay publica, espera o confirm e só
+então marca a outbox. Se falhar, tenta de novo com espera."
 
-"JSON quebrado não volta para a fila. Vai para a DLQ, senão fica girando."
+O enunciado pede três ADRs. Este é o quarto: a outbox é outra decisão,
+não um detalhe da fila.
 
-## 5:30 — A outbox (ADR-004)
+## 4:40 — Cache, ADR-003 (1min10)
 
-"Publicar dentro do POST era frágil: o boleto gravava e a fila recusava.
-Agora o boleto e a mensagem entram na mesma transação.
-O POST responde 201 mesmo com o RabbitMQ parado.
-Um relay publica, espera o confirm, e só então marca a outbox como enviada.
-Se cair, tenta de novo com espera de 2s, 4s, até 30s.
-Se a conexão cair, o processo abre outra e declara a fila de novo."
+"O GET do emissor guarda `boleto:{id}` por 5 minutos. Não guarda 404.
+Quando chega `boleto.registrado`, apago a chave."
 
-Se sobrar tempo: `docker compose stop rabbitmq`, faça um POST, suba o broker
-de novo e mostre `enviado_em` preenchido.
+Duas leituras do mesmo id: `X-Cache: miss`, depois `hit`. "Se o Redis
+cair, o header vai `bypass` e a resposta sai do Postgres."
 
-## 7:30 — O cache (ADR-003)
+## 5:50 — Contrato (40s)
 
-"O GET do emissor é cache-aside. A chave é `boleto:{id}`, o TTL é 5 minutos.
-Não guardo o 404. Quando o registrador avisa `boleto.registrado`,
-eu mudo o status e apago a chave. A leitura seguinte vê `REGISTRADO`."
+"Os dois serviços não compartilham código de mensagem. O JSON fica em
+`contracts/`. O teste do emissor prova o que ele publica. O do
+registrador prova o que ele consome. Se um lado mudar campo ou tipo,
+o teste quebra. Roda no `go test` normal, sem Docker."
 
-```bash
-curl -sD - http://localhost:8080/boletos/ID | grep -i x-cache
-curl -sD - http://localhost:8080/boletos/ID | grep -i x-cache
-```
+## 6:30 — Limites e IA (40s)
 
-"A primeira é miss, a segunda é hit. Se o Redis cair, o header vai bypass
-e a resposta sai do Postgres. O GET do registrador não tem cache:
-ele só mostra a cópia que não muda."
+"Três limites: a outbox pode publicar duas vezes se o processo morrer
+no meio, e o registrador segura; o cache pode regravar `PENDENTE` por
+uma corrida, e o TTL corta; o aviso de registrado não tem outbox, a
+mensagem original volta para a fila."
 
-## 9:00 — Limites e IA
+"Usei IA no Cursor. Eu revisei e explico cada arquivo."
 
-"Três limites que eu sei de cor.
-A outbox pode publicar duas vezes se o processo morrer entre o confirm e o update;
-o registrador segura isso.
-Uma leitura pode regravar `PENDENTE` no cache logo depois do apagar; o TTL corta isso.
-O aviso de registrado não tem outbox própria: se falhar, a mensagem original volta para a fila."
+## 7:10 — Perguntas (até 10:00)
 
-"Usei IA no Cursor para escrever código e texto. Eu revisei as decisões
-e consigo abrir cada arquivo e explicar."
+Deixe o painel e os dois bancos abertos.
 
-## 9:40 — Perguntas
+### Por que fila, e não HTTP?
 
-Deixe o painel do RabbitMQ e os dois bancos abertos.
-Se pedirem o teste: `go test` na unidade, e `./scripts/e2e.sh` no fluxo inteiro.
+O cliente não espera o registro no banco. Se o registrador cair, a
+mensagem fica na fila e é entregue depois. HTTP direto falharia o
+pedido junto. A entrega é pelo menos uma vez: pode repetir, não se perde.
+
+### A mensagem repetida não duplica?
+
+O id do emissor é a chave primária do registrador. O INSERT usa
+`ON CONFLICT (id) DO NOTHING`. A segunda vez acha a linha, loga que já
+existia e dá ack mesmo assim.
+
+### Por que a outbox?
+
+Publicar depois do INSERT perdia a mensagem se o RabbitMQ recusasse,
+e o cliente recebia erro. Agora os dois inserts são a mesma transação.
+O POST responde 201, e o relay publica quando o broker confirma.
+
+### O que o cache guarda, por quanto tempo, e quando apaga?
+
+Guarda o JSON do `GET /boletos/{id}` do emissor, na chave `boleto:{id}`,
+por 5 minutos (`CACHE_TTL`). Não guarda 404. Apaga a chave quando o
+status vira `REGISTRADO`.
+
+### Por que quatro ADRs, se o enunciado pede três?
+
+Os três pedidos são serviço/banco, fila e cache. A outbox é uma quarta
+decisão, com outras alternativas. Ela não substitui o ADR da fila.
+
+### E se o Redis cair?
+
+O GET segue no Postgres e responde 200. O header `X-Cache` vai
+`bypass`. O cache não é caminho obrigatório da leitura.
+
+### Por que Go, e não Spring?
+
+O desafio não prende a linguagem. Go 1.22 já roteia HTTP na biblioteca
+padrão, e cada serviço vira um binário no Docker. A fila e o cache
+entram por interfaces pequenas.
+
+### Você usou IA?
+
+Sim, no Cursor, para código e texto. Eu li os ADRs, rodei os testes e
+o `./scripts/e2e.sh`, e consigo explicar cada escolha.

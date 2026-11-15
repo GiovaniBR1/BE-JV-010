@@ -42,11 +42,9 @@ novo até 3 vezes e, esgotado o limite, também vai para a DLQ.
    nem como repetir a entrega sozinho.
 2. Fila sem idempotência. "Pelo menos uma vez" gravaria duas linhas
    quando o RabbitMQ entregasse de novo.
-3. Outbox na mesma transação do boleto. O `INSERT` e a intenção de
-   publicar sairiam juntos, e um processo à parte publicaria. É o
-   passo seguinte se a publicação não puder se perder. Nesta parte
-   fica de fora: são mais peças para explicar na banca, e a
-   idempotência do registrador continua valendo quando isso entrar.
+3. Um tópico no Kafka no lugar do RabbitMQ. A aula deixa isso como
+   extra. O RabbitMQ já traz o painel em http://localhost:15672, que
+   é onde a banca pede para publicar a mesma mensagem duas vezes.
 
 ## Consequências
 
