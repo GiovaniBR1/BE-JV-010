@@ -15,10 +15,23 @@ type Emissor interface {
 	Emitir(ctx context.Context, dados boleto.Dados) (boleto.Boleto, error)
 }
 
+// Consulta lê o boleto no Postgres do emissor.
+type Consulta interface {
+	BuscarPorID(ctx context.Context, id string) (boleto.Boleto, bool, error)
+}
+
+// Memoria é o cache do GET. Erro significa Redis fora: o HTTP segue no banco.
+type Memoria interface {
+	Buscar(ctx context.Context, id string) (corpo []byte, ok bool, err error)
+	Guardar(ctx context.Context, id string, corpo []byte) error
+}
+
 type Handler struct {
-	Emissor Emissor
-	Agora   func() time.Time
-	Ping    func(context.Context) error
+	Emissor  Emissor
+	Consulta Consulta
+	Cache    Memoria
+	Agora    func() time.Time
+	Ping     func(context.Context) error
 }
 
 func NovoHandler(emissor Emissor, ping func(context.Context) error) *Handler {
@@ -29,6 +42,7 @@ func (h *Handler) Rotas() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", h.Health)
 	mux.HandleFunc("POST /boletos", h.CriarBoleto)
+	mux.HandleFunc("GET /boletos/{id}", h.BuscarBoleto)
 	return mux
 }
 
@@ -77,6 +91,62 @@ func (h *Handler) CriarBoleto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	escreverJSON(w, http.StatusCreated, paraJSON(criado))
+}
+
+func (h *Handler) BuscarBoleto(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if h.Cache == nil {
+		h.buscarNoBanco(w, r, id, "bypass")
+		return
+	}
+	corpo, ok, err := h.Cache.Buscar(r.Context(), id)
+	if err != nil {
+		slog.Warn("cache", "erro", err)
+		h.buscarNoBanco(w, r, id, "bypass")
+		return
+	}
+	if ok {
+		w.Header().Set("X-Cache", "hit")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(corpo)
+		return
+	}
+	h.buscarNoBanco(w, r, id, "miss")
+}
+
+func (h *Handler) buscarNoBanco(w http.ResponseWriter, r *http.Request, id, origem string) {
+	if h.Consulta == nil {
+		escreverErros(w, http.StatusInternalServerError, []string{"consulta indisponível"})
+		return
+	}
+	encontrado, ok, err := h.Consulta.BuscarPorID(r.Context(), id)
+	if err != nil {
+		slog.Error("buscar boleto", "erro", err)
+		escreverErros(w, http.StatusInternalServerError, []string{"não foi possível buscar o boleto"})
+		return
+	}
+	// 404 não entra no cache: a próxima leitura precisa poder achar.
+	if !ok {
+		escreverErros(w, http.StatusNotFound, []string{"boleto não encontrado"})
+		return
+	}
+	corpo, err := json.Marshal(paraJSON(encontrado))
+	if err != nil {
+		escreverErros(w, http.StatusInternalServerError, []string{"não foi possível buscar o boleto"})
+		return
+	}
+	corpo = append(corpo, '\n')
+	if origem == "miss" && h.Cache != nil {
+		if err := h.Cache.Guardar(r.Context(), id, corpo); err != nil {
+			slog.Warn("guardar cache", "erro", err)
+			origem = "bypass"
+		}
+	}
+	w.Header().Set("X-Cache", origem)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(corpo)
 }
 
 type boletoJSON struct {

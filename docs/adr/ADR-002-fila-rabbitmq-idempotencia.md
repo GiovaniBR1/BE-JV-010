@@ -13,8 +13,9 @@ se chegar de novo, não grave outra linha.
 
 ## Decisão
 
-O emissor publica `BoletoEmitido` depois do `INSERT`, no exchange
-`boletos` (direct, durável), com a routing key `boleto.emitido`.
+O emissor grava `BoletoEmitido` junto com o boleto. Um relay publica
+no exchange `boletos` (direct, durável), com a routing key `boleto.emitido`.
+O jeito de não perder essa publicação está no ADR-004.
 A mensagem é persistente e leva `id`, `valor_centavos`, `vencimento`,
 `pagador` e `emitido_em`.
 
@@ -49,9 +50,9 @@ novo até 3 vezes e, esgotado o limite, também vai para a DLQ.
 
 ## Consequências
 
-Publicamos depois do `INSERT`. Se o RabbitMQ recusar, o boleto fica
-`PENDENTE` no emissor, o cliente recebe erro, e a mensagem não saiu.
-Não há outbox.
+A publicação em si saiu do pedido HTTP e foi para a outbox. O motivo
+e o formato estão no ADR-004. A idempotência do registrador continua
+valendo quando a mesma mensagem sai duas vezes.
 
 Os dois serviços declaram a mesma topologia. O declare é idempotente
 só quando os argumentos são iguais; um lado mudar a DLQ sozinho quebra

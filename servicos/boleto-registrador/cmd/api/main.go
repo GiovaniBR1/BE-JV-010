@@ -38,28 +38,11 @@ func main() {
 	}
 	defer pool.Close()
 
-	conn, ch, err := fila.Conectar(ctx, cfg.RabbitMQURL)
-	if err != nil {
-		slog.Error("rabbitmq", "erro", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
-	defer ch.Close()
-	if err := fila.Declarar(ch); err != nil {
-		slog.Error("topologia da fila", "erro", err)
-		os.Exit(1)
-	}
-	fila.AvisarSeCair(ctx, conn)
-
-	consumidor := fila.NovoConsumidor(ch, registro.NovoRepositorio(pool))
-	go func() {
-		if err := consumidor.Iniciar(ctx); err != nil && ctx.Err() == nil {
-			slog.Error("consumidor", "erro", err)
-			parar()
-		}
-	}()
+	repo := registro.NovoRepositorio(pool)
+	go fila.Rodar(ctx, cfg.RabbitMQURL, repo)
 
 	handler := httpapi.NovoHandler(pool.Ping)
+	handler.Consulta = repo
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Porta,
@@ -86,16 +69,27 @@ func main() {
 }
 
 func abrirBanco(ctx context.Context, url string) (*pgxpool.Pool, error) {
-	prazo, cancelar := context.WithTimeout(ctx, 10*time.Second)
-	defer cancelar()
-
-	pool, err := banco.Conectar(prazo, url)
-	if err != nil {
-		return nil, err
+	var ultimo error
+	for tentativa := 1; tentativa <= 15; tentativa++ {
+		prazo, cancelar := context.WithTimeout(ctx, 5*time.Second)
+		pool, err := banco.Conectar(prazo, url)
+		if err == nil {
+			err = banco.Migrar(prazo, pool)
+		}
+		cancelar()
+		if err == nil {
+			return pool, nil
+		}
+		if pool != nil {
+			pool.Close()
+		}
+		ultimo = err
+		slog.Warn("banco indisponível", "tentativa", tentativa, "erro", ultimo)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
 	}
-	if err := banco.Migrar(prazo, pool); err != nil {
-		pool.Close()
-		return nil, err
-	}
-	return pool, nil
+	return nil, ultimo
 }

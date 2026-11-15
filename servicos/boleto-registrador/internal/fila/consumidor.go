@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-registrador/internal/registro"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -61,6 +62,9 @@ func (c *Consumidor) tratar(ctx context.Context, entrega amqp.Delivery) {
 	if err == nil {
 		novo, err = registro.Processar(ctx, c.gravador, msg)
 	}
+	if err == nil {
+		err = c.publicarRegistrado(ctx, msg)
+	}
 
 	escolha := decidir(err, numeroDaTentativa(entrega))
 	switch escolha {
@@ -104,6 +108,23 @@ func decidir(err error, tentativa int) acao {
 		return acaoDLQ
 	}
 	return acaoRepublicar
+}
+
+func (c *Consumidor) publicarRegistrado(ctx context.Context, msg registro.Mensagem) error {
+	corpo, err := registro.CodificarRegistrado(msg.ID, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	err = c.ch.PublishWithContext(ctx, Exchange, RoutingKeyRegistrado, false, false, amqp.Publishing{
+		ContentType:  "application/json",
+		DeliveryMode: amqp.Persistent,
+		MessageId:    msg.ID,
+		Body:         corpo,
+	})
+	if err != nil {
+		return fmt.Errorf("publicar boleto.registrado: %w", err)
+	}
+	return nil
 }
 
 func (c *Consumidor) republicar(ctx context.Context, entrega amqp.Delivery, proxima int) error {

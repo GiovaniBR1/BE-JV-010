@@ -7,54 +7,21 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
-	"github.com/GiovaniBR1/BE-JV-010/servicos/boleto-emissor/internal/boleto"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 const (
-	Exchange    = "boletos"
-	RoutingKey  = "boleto.emitido"
-	Fila        = "boleto.emitido"
-	ExchangeDLQ = "boletos.dlx"
-	FilaDLQ     = "boleto.emitido.dlq"
+	Exchange             = "boletos"
+	RoutingKey           = "boleto.emitido"
+	Fila                 = "boleto.emitido"
+	RoutingKeyRegistrado = "boleto.registrado"
+	FilaRegistrado       = "boleto.registrado"
+	ExchangeDLQ          = "boletos.dlx"
+	FilaDLQ              = "boleto.emitido.dlq"
+	FilaDLQRegistrado    = "boleto.registrado.dlq"
 )
-
-// Publicador publica BoletoEmitido. Implementa boleto.Publicador.
-type Publicador struct {
-	ch *amqp.Channel
-	// O canal do cliente AMQP não aceita duas publicações ao mesmo tempo.
-	mu sync.Mutex
-}
-
-func NovoPublicador(ch *amqp.Channel) *Publicador {
-	return &Publicador{ch: ch}
-}
-
-func (p *Publicador) PublicarBoletoEmitido(ctx context.Context, b boleto.Boleto) error {
-	corpo, err := boleto.Codificar(b)
-	if err != nil {
-		return fmt.Errorf("codificar mensagem: %w", err)
-	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	err = p.ch.PublishWithContext(ctx, Exchange, RoutingKey, false, false, amqp.Publishing{
-		ContentType:  "application/json",
-		DeliveryMode: amqp.Persistent,
-		MessageId:    b.ID,
-		Body:         corpo,
-	})
-	if err != nil {
-		return fmt.Errorf("publicar boleto emitido: %w", err)
-	}
-	return nil
-}
-
-var _ boleto.Publicador = (*Publicador)(nil)
 
 // Conectar tenta de novo por uns 30s. O healthcheck do RabbitMQ
 // às vezes passa um instante antes da porta AMQP aceitar conexão.
@@ -93,7 +60,9 @@ func AvisarSeCair(ctx context.Context, conn *amqp.Connection) {
 	}()
 }
 
-// Declarar cria exchange, fila, DLQ e o bind. Idempotente.
+// Declarar cria exchange, filas, DLQs e os binds.
+// O registrador declara a mesma topologia. O RabbitMQ aceita de novo
+// se os argumentos forem iguais.
 func Declarar(ch *amqp.Channel) error {
 	if err := ch.ExchangeDeclare(Exchange, "direct", true, false, false, false, nil); err != nil {
 		return fmt.Errorf("exchange: %w", err)
@@ -101,21 +70,44 @@ func Declarar(ch *amqp.Channel) error {
 	if err := ch.ExchangeDeclare(ExchangeDLQ, "direct", true, false, false, false, nil); err != nil {
 		return fmt.Errorf("exchange da dlq: %w", err)
 	}
-	if _, err := ch.QueueDeclare(FilaDLQ, true, false, false, false, nil); err != nil {
-		return fmt.Errorf("fila da dlq: %w", err)
+	if err := declararFila(ch, FilaDLQ, nil); err != nil {
+		return err
 	}
 	if err := ch.QueueBind(FilaDLQ, RoutingKey, ExchangeDLQ, false, nil); err != nil {
-		return fmt.Errorf("bind da dlq: %w", err)
+		return fmt.Errorf("bind da dlq emitido: %w", err)
 	}
-	args := amqp.Table{
+	if err := declararFila(ch, FilaDLQRegistrado, nil); err != nil {
+		return err
+	}
+	if err := ch.QueueBind(FilaDLQRegistrado, RoutingKeyRegistrado, ExchangeDLQ, false, nil); err != nil {
+		return fmt.Errorf("bind da dlq registrado: %w", err)
+	}
+	argsEmitido := amqp.Table{
 		"x-dead-letter-exchange":    ExchangeDLQ,
 		"x-dead-letter-routing-key": RoutingKey,
 	}
-	if _, err := ch.QueueDeclare(Fila, true, false, false, false, args); err != nil {
-		return fmt.Errorf("fila: %w", err)
+	if err := declararFila(ch, Fila, argsEmitido); err != nil {
+		return err
 	}
 	if err := ch.QueueBind(Fila, RoutingKey, Exchange, false, nil); err != nil {
-		return fmt.Errorf("bind: %w", err)
+		return fmt.Errorf("bind emitido: %w", err)
+	}
+	argsRegistrado := amqp.Table{
+		"x-dead-letter-exchange":    ExchangeDLQ,
+		"x-dead-letter-routing-key": RoutingKeyRegistrado,
+	}
+	if err := declararFila(ch, FilaRegistrado, argsRegistrado); err != nil {
+		return err
+	}
+	if err := ch.QueueBind(FilaRegistrado, RoutingKeyRegistrado, Exchange, false, nil); err != nil {
+		return fmt.Errorf("bind registrado: %w", err)
+	}
+	return nil
+}
+
+func declararFila(ch *amqp.Channel, nome string, args amqp.Table) error {
+	if _, err := ch.QueueDeclare(nome, true, false, false, false, args); err != nil {
+		return fmt.Errorf("fila %s: %w", nome, err)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package registro
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -27,6 +28,16 @@ func TestDecodificar(t *testing.T) {
 	}
 	if !msg.EmitidoEm.Equal(time.Date(2026, 11, 14, 18, 0, 0, 0, time.UTC)) {
 		t.Fatalf("emitido_em = %s", msg.EmitidoEm)
+	}
+}
+
+func TestCodificarRegistrado(t *testing.T) {
+	corpo, err := CodificarRegistrado("7c9e6679-7425-40de-944b-e07fc1f90ae7", time.Date(2026, 11, 14, 18, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(corpo), `"id":"7c9e6679-7425-40de-944b-e07fc1f90ae7"`) || !strings.Contains(string(corpo), `"registrado_em":"2026-11-14T18:00:00Z"`) {
+		t.Fatalf("corpo = %s", corpo)
 	}
 }
 
