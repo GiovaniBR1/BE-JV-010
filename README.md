@@ -58,7 +58,7 @@ curl -s -X POST http://localhost:8080/boletos \
 
 A resposta é `201` mesmo se o RabbitMQ estiver fora, porque a mensagem ficou na outbox. Pedido inválido responde `400` com `{"erros":["..."]}`.
 
-Conferir os dois bancos. `valor_centavos` é inteiro: `15050` significa R$ 150,50.
+Espere um ou dois segundos. A fila é assíncrona: o emissor grava `PENDENTE` na hora, e o registrador chega logo em seguida com `REGISTRADO`. `valor_centavos` é inteiro: `15050` significa R$ 150,50.
 
 ```bash
 docker compose exec postgres-emissor \
@@ -146,6 +146,10 @@ O `id` é a chave primária em `boletos_registrados`. O `INSERT` usa `ON CONFLIC
 
 ## Decisões
 
+O enunciado pede três ADRs: a divisão dos serviços, a fila e o cache.
+Este repositório tem quatro. O quarto existe porque a outbox é outra
+decisão, com outras alternativas. Ela não substitui a da fila.
+
 - [ADR-001](docs/adr/ADR-001-banco-por-servico.md): dois serviços, cada um com o seu Postgres.
 - [ADR-002](docs/adr/ADR-002-fila-rabbitmq-idempotencia.md): fila em vez de HTTP, entrega pelo menos uma vez, mensagem repetida não duplica.
 - [ADR-003](docs/adr/ADR-003-cache-redis.md): o que o cache guarda, o TTL e quando apaga.
@@ -156,15 +160,21 @@ O `id` é a chave primária em `boletos_registrados`. O `INSERT` usa `ON CONFLIC
 - Parte 1 (esqueleto): feita.
 - Parte 2 (fila e idempotência): feita.
 - Parte 3 (cache): feita. `GET /boletos/{id}` no emissor, com Redis. O registrador também tem GET, sem cache.
-- Parte 4 (fechamento): este README e o roteiro em `docs/banca.md`.
+- Parte 4 (fechamento): README, ADRs revisados, teste de contrato e o roteiro em `docs/banca.md`.
 
 ## Testes
 
-Unidade, dentro de cada serviço ou da raiz:
+Unidade, dentro de cada serviço ou da raiz. Isso inclui o teste de contrato:
 
 ```bash
 go test ./servicos/boleto-emissor/... ./servicos/boleto-registrador/...
 go vet ./servicos/boleto-emissor/... ./servicos/boleto-registrador/...
+```
+
+O contrato mora em `contracts/`. São dois JSON de exemplo (`boleto.emitido` e `boleto.registrado`) e, ao lado, o tipo de cada campo. O teste do emissor codifica um boleto e exige o mesmo JSON. O teste do registrador decodifica esse arquivo e exige os mesmos valores. O outro par faz o inverso com `boleto.registrado`. Se um lado renomear um campo ou trocar `number` por `string`, o teste quebra. Para rodar só esses:
+
+```bash
+go test ./servicos/boleto-emissor/internal/boleto ./servicos/boleto-emissor/internal/fila ./servicos/boleto-registrador/internal/registro -run Contrato
 ```
 
 Integração, com Docker no ar. Sobe Postgres, RabbitMQ e Redis de verdade:

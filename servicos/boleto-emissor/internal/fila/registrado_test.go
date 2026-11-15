@@ -30,7 +30,7 @@ func (c *cacheFake) Apagar(_ context.Context, id string) error {
 func TestAplicarRegistradoAtualizaEApagaCache(t *testing.T) {
 	atual := &atualFake{achou: true}
 	cache := &cacheFake{}
-	err := AplicarRegistrado(context.Background(), atual, cache, []byte(`{"id":"7c9e6679-7425-40de-944b-e07fc1f90ae7"}`))
+	err := AplicarRegistrado(context.Background(), atual, cache, []byte(`{"id":"7c9e6679-7425-40de-944b-e07fc1f90ae7","registrado_em":"2026-11-14T18:00:00Z"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestAplicarRegistradoRejeitaJSON(t *testing.T) {
 func TestAplicarRegistradoNaoApagaCacheSeOBancoFalhar(t *testing.T) {
 	atual := &atualFake{err: errors.New("banco fora")}
 	cache := &cacheFake{}
-	err := AplicarRegistrado(context.Background(), atual, cache, []byte(`{"id":"7c9e6679-7425-40de-944b-e07fc1f90ae7"}`))
+	err := AplicarRegistrado(context.Background(), atual, cache, []byte(`{"id":"7c9e6679-7425-40de-944b-e07fc1f90ae7","registrado_em":"2026-11-14T18:00:00Z"}`))
 	if err == nil {
 		t.Fatal("esperava erro")
 	}

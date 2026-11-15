@@ -17,15 +17,13 @@ São dois serviços:
 
 - `boleto-emissor` recebe `POST /boletos`, valida e grava o boleto como
   `PENDENTE` no Postgres dele.
-- `boleto-registrador` guarda, no Postgres dele, o boleto que ele
-  registrar. Na Parte 1 ele só sobe, cria a tabela e responde `GET /health`.
+- `boleto-registrador` grava a cópia registrada no Postgres dele.
 
 Não há tabela compartilhada nem biblioteca de domínio compartilhada.
-O id gerado pelo emissor é a chave primária do registrador, e é com ela
-que a mensagem repetida deixa de virar uma segunda linha.
+O id gerado pelo emissor é a chave primária do registrador.
 
-Como os dois vão conversar fica para o ADR-002. O cache de leitura fica
-para o ADR-003.
+Como os dois conversam fica no ADR-002. O cache fica no ADR-003.
+A outbox fica no ADR-004.
 
 ## Alternativas consideradas
 
@@ -34,14 +32,13 @@ para o ADR-003.
    atende o critério de dois serviços e dois bancos.
 2. Dois serviços apontando para o mesmo Postgres. A implantação separa,
    mas o schema continua único: uma migração de um lado quebra o outro.
-3. Dois serviços e dois bancos, com o registrador consultando o emissor
-   por HTTP na hora de gravar. O dado do registrador passaria a depender
-   do emissor estar no ar. A cópia local, alimentada pela mensagem,
-   deixa o registrador atender a leitura com o que ele mesmo gravou.
+3. Dois serviços e dois bancos, mas o registrador pergunta o dado ao
+   emissor por HTTP na hora de gravar. A cópia do registrador passaria
+   a depender do emissor estar no ar.
 
-A opção 3 é a escolhida. A comparação fila contra HTTP direto, incluindo
-a garantia de "pelo menos uma vez", fica no ADR-002 para não misturar
-duas decisões num arquivo só.
+A escolha é dois serviços e dois bancos, cada um com a cópia que
+precisa. O id liga as duas linhas. Fila contra HTTP direto fica no
+ADR-002, para não misturar duas decisões neste arquivo.
 
 ## Consequências
 
