@@ -1,0 +1,7 @@
+{
+  "id": "string",
+  "valor_centavos": "number",
+  "vencimento": "string",
+  "pagador": "string",
+  "emitido_em": "string"
+}

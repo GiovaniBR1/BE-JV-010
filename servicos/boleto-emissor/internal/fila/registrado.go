@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -27,9 +28,13 @@ type Apagador interface {
 // O apagar falhar não desfaz o status: o TTL ainda expira a cópia velha.
 func AplicarRegistrado(ctx context.Context, atual Atualizador, cache Apagador, corpo []byte) error {
 	var msg struct {
-		ID string `json:"id"`
+		ID           string `json:"id"`
+		RegistradoEm string `json:"registrado_em"`
 	}
 	if err := json.Unmarshal(corpo, &msg); err != nil || msg.ID == "" {
+		return ErrRegistradoInvalido
+	}
+	if _, err := time.Parse(time.RFC3339, msg.RegistradoEm); err != nil {
 		return ErrRegistradoInvalido
 	}
 	achou, err := atual.MarcarRegistrado(ctx, msg.ID)
