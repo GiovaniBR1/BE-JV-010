@@ -19,14 +19,22 @@ const (
 	acaoDLQ
 )
 
+// confirmTimeout é o tempo máximo para o broker confirmar boleto.registrado.
+// Sem essa confirmação, a mensagem original não recebe ack.
+const confirmTimeout = 5 * time.Second
+
 // Consumidor escuta boleto.emitido com ack manual.
 type Consumidor struct {
 	ch       *amqp.Channel
 	gravador registro.Gravador
+	confirms <-chan amqp.Confirmation
+	publicar func(context.Context, registro.Mensagem) error
 }
 
 func NovoConsumidor(ch *amqp.Channel, gravador registro.Gravador) *Consumidor {
-	return &Consumidor{ch: ch, gravador: gravador}
+	c := &Consumidor{ch: ch, gravador: gravador}
+	c.publicar = c.publicarRegistrado
+	return c
 }
 
 var _ registro.Consumidor = (*Consumidor)(nil)
@@ -34,6 +42,13 @@ var _ registro.Consumidor = (*Consumidor)(nil)
 func (c *Consumidor) Iniciar(ctx context.Context) error {
 	if err := c.ch.Qos(Prefetch, 0, false); err != nil {
 		return fmt.Errorf("prefetch: %w", err)
+	}
+	// Confirm mode: cada publicação, inclusive boleto.registrado, recebe ack ou nack do broker.
+	if c.ch != nil && c.confirms == nil {
+		if err := c.ch.Confirm(false); err != nil {
+			return fmt.Errorf("confirm: %w", err)
+		}
+		c.confirms = c.ch.NotifyPublish(make(chan amqp.Confirmation, 1))
 	}
 	// autoAck falso: só confirmamos depois de gravar, ou de decidir a DLQ.
 	entregas, err := c.ch.Consume(Fila, "", false, false, false, false, nil)
@@ -63,7 +78,7 @@ func (c *Consumidor) tratar(ctx context.Context, entrega amqp.Delivery) {
 		novo, err = registro.Processar(ctx, c.gravador, msg)
 	}
 	if err == nil {
-		err = c.publicarRegistrado(ctx, msg)
+		err = c.publicar(ctx, msg)
 	}
 
 	escolha := decidir(err, numeroDaTentativa(entrega))
@@ -115,7 +130,7 @@ func (c *Consumidor) publicarRegistrado(ctx context.Context, msg registro.Mensag
 	if err != nil {
 		return err
 	}
-	err = c.ch.PublishWithContext(ctx, Exchange, RoutingKeyRegistrado, false, false, amqp.Publishing{
+	err = c.publicarEEsperar(ctx, RoutingKeyRegistrado, amqp.Publishing{
 		ContentType:  "application/json",
 		DeliveryMode: amqp.Persistent,
 		MessageId:    msg.ID,
@@ -127,13 +142,42 @@ func (c *Consumidor) publicarRegistrado(ctx context.Context, msg registro.Mensag
 	return nil
 }
 
+// publicarEEsperar manda a mensagem e só volta depois do ack do broker.
+// Nack ou timeout são erro: a mensagem original não pode ser confirmada.
+func (c *Consumidor) publicarEEsperar(ctx context.Context, routingKey string, pub amqp.Publishing) error {
+	if err := c.ch.PublishWithContext(ctx, Exchange, routingKey, false, false, pub); err != nil {
+		return fmt.Errorf("publicar: %w", err)
+	}
+	return esperarConfirmacao(ctx, c.confirms, confirmTimeout)
+}
+
+func esperarConfirmacao(ctx context.Context, confirms <-chan amqp.Confirmation, limite time.Duration) error {
+	if confirms == nil {
+		return fmt.Errorf("canal sem confirmação")
+	}
+	select {
+	case conf, ok := <-confirms:
+		if !ok {
+			return fmt.Errorf("canal de confirmação fechou")
+		}
+		if !conf.Ack {
+			return fmt.Errorf("broker não confirmou a mensagem")
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(limite):
+		return fmt.Errorf("confirmação demorou demais")
+	}
+}
+
 func (c *Consumidor) republicar(ctx context.Context, entrega amqp.Delivery, proxima int) error {
 	headers := amqp.Table{}
 	for chave, valor := range entrega.Headers {
 		headers[chave] = valor
 	}
 	headers["x-tentativas"] = int32(proxima)
-	return c.ch.PublishWithContext(ctx, Exchange, RoutingKey, false, false, amqp.Publishing{
+	return c.publicarEEsperar(ctx, RoutingKey, amqp.Publishing{
 		ContentType:  "application/json",
 		DeliveryMode: amqp.Persistent,
 		MessageId:    entrega.MessageId,

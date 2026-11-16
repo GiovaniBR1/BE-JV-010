@@ -3,7 +3,7 @@ Para entender o projeto contado como uma história, veja [docs/historia.md](docs
 
 Projeto final individual do módulo BE-JV-010 (Ada Tech).
 
-O cliente pede um boleto. O `boleto-emissor` valida, grava `PENDENTE` no Postgres dele e deixa o JSON numa outbox, na mesma transação. Um relay publica `BoletoEmitido` no RabbitMQ quando o broker confirma. O `boleto-registrador` consome, simula o registro e grava a própria cópia uma vez só. Ele devolve `boleto.registrado`. O emissor muda o status para `REGISTRADO` e apaga a cópia no Redis.
+A Palavra Viva, uma escola pequena, pede o boleto da aluna Maria Silva: R$ 150,50, com vencimento em 31 de dezembro de 2026. O `boleto-emissor` valida, grava `PENDENTE` no Postgres dele e deixa o JSON numa outbox, na mesma transação. Um relay publica `BoletoEmitido` no RabbitMQ quando o broker confirma. O `boleto-registrador` consome, simula o registro e grava a própria cópia uma vez só. Ele devolve `boleto.registrado` e só confirma a mensagem original depois dessa confirmação do broker. O emissor muda o status para `REGISTRADO` e apaga a cópia no Redis.
 
 Perfil **A**: tudo sobe com Docker.
 
@@ -57,7 +57,13 @@ curl -s -X POST http://localhost:8080/boletos \
   -d '{"valor":"150.50","vencimento":"2026-12-31","pagador":"Maria Silva"}'
 ```
 
-A resposta é `201` mesmo se o RabbitMQ estiver fora, porque a mensagem ficou na outbox. Pedido inválido responde `400` com `{"erros":["..."]}`.
+A resposta é `201` mesmo se o RabbitMQ estiver fora, porque a mensagem ficou na outbox. O corpo sai assim, com um `id` novo a cada pedido:
+
+```json
+{"id":"7c9e6679-7425-40de-944b-e07fc1f90ae7","valor":"150.50","vencimento":"2026-12-31","pagador":"Maria Silva","status":"PENDENTE","criado_em":"2026-11-16T18:00:00Z"}
+```
+
+Pedido inválido responde `400` com `{"erros":["..."]}`. Os dois health checks respondem `{"status":"ok"}`.
 
 Espere um ou dois segundos. A fila é assíncrona: o emissor grava `PENDENTE` na hora, e o registrador chega logo em seguida com `REGISTRADO`. `valor_centavos` é inteiro: `15050` significa R$ 150,50.
 
@@ -71,7 +77,7 @@ docker compose exec postgres-registrador \
   -c 'select id, valor_centavos, status from boletos_registrados;'
 ```
 
-Para encerrar: `docker compose down`.
+Depois da fila, as duas consultas mostram a mesma cobrança da Maria, com `valor_centavos` 15050 e `status` `REGISTRADO`. Para encerrar: `docker compose down`.
 
 ## Como conferir a mensagem repetida
 
@@ -115,11 +121,11 @@ A primeira resposta traz `X-Cache: miss`. A segunda, `X-Cache: hit`. Um id que n
 docker compose stop rabbitmq
 curl -s -X POST http://localhost:8080/boletos \
   -H 'Content-Type: application/json' \
-  -d '{"valor":"10.00","vencimento":"2026-12-31","pagador":"Ana"}'
+  -d '{"valor":"150.50","vencimento":"2026-12-31","pagador":"Maria Silva"}'
 docker compose start rabbitmq
 ```
 
-O `POST` responde `201`. A linha nasce na tabela `outbox` com `enviado_em` nulo. Quando o broker volta, o relay publica e preenche `enviado_em`.
+O `POST` da mensalidade da Maria responde `201`, com `"valor":"150.50"` e `"status":"PENDENTE"`. A linha nasce na tabela `outbox` com `enviado_em` nulo. Quando o broker volta, o relay publica e preenche `enviado_em`.
 
 O script `./scripts/e2e.sh` faz o caminho feliz: POST, espera o registrador, confere miss e hit, publica a mesma mensagem de novo e exige uma linha só.
 
@@ -195,7 +201,7 @@ docker compose up --build -d
 
 - Se o relay cair depois do confirm e antes de marcar a outbox, a mensagem sai de novo. O registrador não duplica a linha.
 - Uma leitura que já pegou `PENDENTE` no banco pode gravar essa cópia no Redis logo depois do apagar. O TTL de 5 minutos limita essa janela.
-- O aviso `boleto.registrado` não tem outbox. Se a publicação falha, `boleto.emitido` volta para a fila e o aviso é tentado de novo.
+- O aviso `boleto.registrado` não tem outbox. O registrador espera o confirm do broker antes do ack; se a publicação falha, `boleto.emitido` volta para a fila e o aviso é tentado de novo, sem segunda linha.
 - Os dois serviços declaram a mesma topologia. Mudar o argumento de uma fila só de um lado quebra a subida do outro.
 - Não há reconexão infinita silenciosa sem log: a queda aparece no log e o loop tenta de novo, com espera de até 15 segundos.
 
