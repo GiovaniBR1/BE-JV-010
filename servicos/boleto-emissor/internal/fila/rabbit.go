@@ -49,17 +49,6 @@ func Conectar(ctx context.Context, url string) (*amqp.Connection, *amqp.Channel,
 	return nil, nil, fmt.Errorf("conectar no rabbitmq: %w", ultimo)
 }
 
-// AvisarSeCair registra no log se a conexão cair fora do desligamento.
-func AvisarSeCair(ctx context.Context, conn *amqp.Connection) {
-	avisos := conn.NotifyClose(make(chan *amqp.Error, 1))
-	go func() {
-		err := <-avisos
-		if err != nil && ctx.Err() == nil {
-			slog.Error("conexão com o rabbitmq caiu", "erro", err)
-		}
-	}()
-}
-
 // Declarar cria exchange, filas, DLQs e os binds.
 // O registrador declara a mesma topologia. O RabbitMQ aceita de novo
 // se os argumentos forem iguais.

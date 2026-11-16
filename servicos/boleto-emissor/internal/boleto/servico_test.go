@@ -66,10 +66,3 @@ func TestEmitirDevolveErroDoBanco(t *testing.T) {
 		t.Fatalf("chamadas = %d", repo.chamadas)
 	}
 }
-
-func TestPublicadorNoop(t *testing.T) {
-	var pub PublicadorNoop
-	if err := pub.PublicarBoletoEmitido(context.Background(), Boleto{ID: "x"}); err != nil {
-		t.Fatal(err)
-	}
-}

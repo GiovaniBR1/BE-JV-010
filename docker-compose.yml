@@ -1,5 +1,6 @@
-# Perfil A: docker compose up --build
-# A fila está ligada. O Redis sobe, mas o cache fica para a Parte 3.
+# Perfil A: docker compose up --build -d
+# Sobe os dois serviços, um Postgres para cada um, RabbitMQ e Redis.
+# A fila (boleto.emitido e boleto.registrado) e o cache do GET já estão ligados.
 
 services:
   postgres-emissor:
