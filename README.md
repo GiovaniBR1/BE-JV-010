@@ -1,4 +1,5 @@
 # Central de boletos
+Para entender o projeto contado como uma história, veja [docs/historia.md](docs/historia.md).
 
 Projeto final individual do módulo BE-JV-010 (Ada Tech).
 
